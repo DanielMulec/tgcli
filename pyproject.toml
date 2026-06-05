@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tgcli-local"
+version = "0.1.0"
+description = "A macOS-first Telegram CLI for auth, sync, search, and send workflows."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+  { name = "Daniel Mulec" }
+]
+dependencies = [
+  "qrcode>=8,<9",
+  "Telethon>=1.43,<2",
+]
+
+[project.scripts]
+tgcli = "tgcli.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tgcli"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+htmlcov/
+.pytest_cache/
+.coverage
+*.session
+*.session-journal
+*.db
+*.db-shm
+*.db-wal
