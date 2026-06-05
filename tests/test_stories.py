@@ -7,7 +7,15 @@ from telethon.tl import functions, types
 from tgcli.cli import build_parser
 from tgcli.config import RuntimeConfig
 from tgcli.errors import CliError
-from tgcli.telegram import post_story_photo, story_period_seconds, story_privacy_rules, story_targets
+from tgcli.telegram import (
+    post_story_photo,
+    story_config_from_app_config,
+    story_limits,
+    story_period_seconds,
+    story_privacy_rules,
+    story_targets,
+    story_wait_seconds,
+)
 
 
 class FakeStoryClient:
@@ -34,6 +42,21 @@ class FakeStoryClient:
 
     async def __call__(self, request):
         self.requests.append(request)
+        if isinstance(request, functions.help.GetAppConfigRequest):
+            return SimpleNamespace(
+                config=types.JsonObject(
+                    [
+                        types.JsonObjectValue("stories_posting", types.JsonString("enabled")),
+                        types.JsonObjectValue("story_expiring_limit_default", types.JsonNumber(1)),
+                        types.JsonObjectValue("story_expiring_limit_premium", types.JsonNumber(100)),
+                        types.JsonObjectValue("stories_sent_weekly_limit_default", types.JsonNumber(3)),
+                        types.JsonObjectValue("stories_sent_monthly_limit_default", types.JsonNumber(10)),
+                        types.JsonObjectValue("story_caption_length_limit_default", types.JsonNumber(200)),
+                        types.JsonObjectValue("story_expire_period", types.JsonNumber(86400)),
+                        types.JsonObjectValue("unrelated", types.JsonString("ignored")),
+                    ]
+                )
+            )
         if isinstance(request, functions.stories.GetChatsToSendRequest):
             return SimpleNamespace(
                 chats=[
@@ -124,6 +147,29 @@ def test_story_privacy_rules() -> None:
 def test_story_period_seconds() -> None:
     assert story_period_seconds(6) == 21600
     assert story_period_seconds(24) == 86400
+
+
+def test_story_wait_seconds() -> None:
+    assert story_wait_seconds("STORY_SEND_FLOOD_WEEKLY_12345") == 12345
+    assert story_wait_seconds("STORY_SEND_FLOOD_MONTHLY_99") == 99
+    assert story_wait_seconds("PREMIUM_ACCOUNT_REQUIRED") is None
+
+
+def test_story_config_from_app_config_filters_story_keys() -> None:
+    app_config = SimpleNamespace(
+        config=types.JsonObject(
+            [
+                types.JsonObjectValue("stories_posting", types.JsonString("enabled")),
+                types.JsonObjectValue("story_expiring_limit_default", types.JsonNumber(1)),
+                types.JsonObjectValue("unrelated", types.JsonString("ignored")),
+            ]
+        )
+    )
+
+    assert story_config_from_app_config(app_config) == {
+        "stories_posting": "enabled",
+        "story_expiring_limit_default": 1,
+    }
 
 
 def test_post_story_photo_builds_send_story_request(monkeypatch, tmp_path: Path) -> None:
@@ -217,3 +263,24 @@ def test_story_targets(monkeypatch, tmp_path: Path) -> None:
         }
     ]
     assert isinstance(fake_client.requests[0], functions.stories.GetChatsToSendRequest)
+
+
+def test_story_limits(monkeypatch, tmp_path: Path) -> None:
+    runtime = runtime_for(tmp_path)
+    fake_client = FakeStoryClient()
+
+    monkeypatch.setattr("tgcli.telegram.api_credentials", lambda _runtime: (123, "hash"))
+    monkeypatch.setattr("tgcli.telegram.make_client", lambda *_args, **_kwargs: fake_client)
+
+    result = asyncio.run(story_limits(runtime, as_peer="me"))
+
+    assert result["eligibility"]["can_post"] is True
+    assert result["eligibility"]["remaining_active_slots"] == 3
+    assert result["posting_mode"] == "enabled"
+    assert result["free"]["active_limit"] == 1
+    assert result["free"]["weekly_send_limit"] == 3
+    assert result["free"]["monthly_send_limit"] == 10
+    assert result["free"]["expiry_seconds"] == 86400
+    assert "unrelated" not in result["raw_config"]
+    assert isinstance(fake_client.requests[0], functions.help.GetAppConfigRequest)
+    assert isinstance(fake_client.requests[1], functions.stories.CanSendStoryRequest)

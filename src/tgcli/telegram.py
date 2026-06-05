@@ -4,6 +4,7 @@ import asyncio
 import getpass
 import mimetypes
 import platform
+import re
 import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -441,6 +442,47 @@ async def story_targets(runtime: RuntimeConfig) -> list[dict[str, Any]]:
         return [entity_to_public(chat) for chat in getattr(result, "chats", []) or []]
 
 
+async def story_limits(runtime: RuntimeConfig, *, as_peer: str) -> dict[str, Any]:
+    async with connected_client(runtime) as client:
+        app_config = await client(functions.help.GetAppConfigRequest(hash=0))
+        story_config = story_config_from_app_config(app_config)
+        store = Store(runtime.db_path, read_only=True) if runtime.db_path.exists() else None
+        try:
+            peer = await resolve_input_peer(client, store, as_peer)
+            ok, result_or_error = await story_post_eligibility(client, peer)
+        finally:
+            if store:
+                store.close()
+
+    eligibility: dict[str, Any] = {"can_post": ok, "as": as_peer}
+    if ok:
+        eligibility["remaining_active_slots"] = getattr(result_or_error, "count_remains", None)
+    else:
+        eligibility["error"] = result_or_error
+        wait_seconds = story_wait_seconds(str(result_or_error))
+        if wait_seconds is not None:
+            eligibility["wait_seconds"] = wait_seconds
+
+    return {
+        "eligibility": eligibility,
+        "posting_mode": story_config.get("stories_posting"),
+        "free": {
+            "active_limit": story_config.get("story_expiring_limit_default"),
+            "weekly_send_limit": story_config.get("stories_sent_weekly_limit_default"),
+            "monthly_send_limit": story_config.get("stories_sent_monthly_limit_default"),
+            "caption_length_limit": story_config.get("story_caption_length_limit_default"),
+            "expiry_seconds": story_config.get("story_expire_period"),
+        },
+        "premium": {
+            "active_limit": story_config.get("story_expiring_limit_premium"),
+            "weekly_send_limit": story_config.get("stories_sent_weekly_limit_premium"),
+            "monthly_send_limit": story_config.get("stories_sent_monthly_limit_premium"),
+            "caption_length_limit": story_config.get("story_caption_length_limit_premium"),
+        },
+        "raw_config": story_config,
+    }
+
+
 async def list_contacts(runtime: RuntimeConfig, *, limit: int) -> list[dict[str, Any]]:
     async with connected_client(runtime) as client:
         result = await client(functions.contacts.GetContactsRequest(hash=0))
@@ -464,6 +506,35 @@ async def story_post_eligibility(client: TelegramClient, peer: Any) -> tuple[boo
         return True, await client(functions.stories.CanSendStoryRequest(peer=peer))
     except RPCError as exc:
         return False, str(exc)
+
+
+def story_config_from_app_config(app_config: Any) -> dict[str, Any]:
+    data = telegram_json_value(getattr(app_config, "config", app_config))
+    if not isinstance(data, dict):
+        return {}
+    return {key: data[key] for key in sorted(data) if key.startswith(("story_", "stories_"))}
+
+
+def telegram_json_value(value: Any) -> Any:
+    if isinstance(value, types.JsonString):
+        return value.value
+    if isinstance(value, types.JsonNumber):
+        number = value.value
+        return int(number) if float(number).is_integer() else number
+    if isinstance(value, types.JsonBool):
+        return value.value
+    if isinstance(value, types.JsonNull):
+        return None
+    if isinstance(value, types.JsonArray):
+        return [telegram_json_value(item) for item in value.value]
+    if isinstance(value, types.JsonObject):
+        return {item.key: telegram_json_value(item.value) for item in value.value}
+    return value
+
+
+def story_wait_seconds(error: str) -> int | None:
+    match = re.search(r"STORY_SEND_FLOOD_(?:WEEKLY|MONTHLY)_(\d+)", error)
+    return int(match.group(1)) if match else None
 
 
 async def resolve_entity(client: TelegramClient, store: Store | None, value: str | None) -> Any:
