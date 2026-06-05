@@ -6,11 +6,13 @@ from telethon.tl import functions, types
 
 from tgcli.cli import build_parser
 from tgcli.config import RuntimeConfig
+from tgcli.errors import CliError
 from tgcli.telegram import post_story_photo, story_period_seconds, story_privacy_rules
 
 
 class FakeStoryClient:
-    def __init__(self) -> None:
+    def __init__(self, *, can_post: bool = True) -> None:
+        self.can_post = can_post
         self.requests = []
         self.uploads = []
 
@@ -32,6 +34,10 @@ class FakeStoryClient:
 
     async def __call__(self, request):
         self.requests.append(request)
+        if isinstance(request, functions.stories.CanSendStoryRequest):
+            if self.can_post:
+                return SimpleNamespace(count_remains=3)
+            raise FakeStoryRpcError("PREMIUM_ACCOUNT_REQUIRED")
         if isinstance(request, functions.stories.SendStoryRequest):
             return SimpleNamespace(
                 updates=[
@@ -39,6 +45,10 @@ class FakeStoryClient:
                 ]
             )
         raise AssertionError(f"Unexpected request: {request!r}")
+
+
+class FakeStoryRpcError(Exception):
+    pass
 
 
 def runtime_for(tmp_path: Path) -> RuntimeConfig:
@@ -101,7 +111,8 @@ def test_post_story_photo_builds_send_story_request(monkeypatch, tmp_path: Path)
     assert result["caption"] == "sent by tgcli"
     assert result["privacy"] == "contacts"
     assert fake_client.uploads == [str(photo)]
-    request = fake_client.requests[0]
+    assert isinstance(fake_client.requests[0], functions.stories.CanSendStoryRequest)
+    request = fake_client.requests[1]
     assert isinstance(request, functions.stories.SendStoryRequest)
     assert request.peer == "input:me"
     assert isinstance(request.media, types.InputMediaUploadedPhoto)
@@ -111,3 +122,36 @@ def test_post_story_photo_builds_send_story_request(monkeypatch, tmp_path: Path)
     assert request.pinned is True
     assert request.noforwards is True
     assert isinstance(request.privacy_rules[0], types.InputPrivacyValueAllowContacts)
+
+
+def test_post_story_photo_preflights_before_upload(monkeypatch, tmp_path: Path) -> None:
+    runtime = runtime_for(tmp_path)
+    photo = tmp_path / "story.jpg"
+    photo.write_bytes(b"fake-jpeg")
+    fake_client = FakeStoryClient(can_post=False)
+
+    monkeypatch.setattr("tgcli.telegram.RPCError", FakeStoryRpcError)
+    monkeypatch.setattr("tgcli.telegram.api_credentials", lambda _runtime: (123, "hash"))
+    monkeypatch.setattr("tgcli.telegram.make_client", lambda *_args, **_kwargs: fake_client)
+
+    try:
+        asyncio.run(
+            post_story_photo(
+                runtime,
+                as_peer="me",
+                file_path=photo,
+                caption="sent by tgcli",
+                privacy="contacts",
+                period_hours=24,
+                pinned=False,
+                noforwards=False,
+            )
+        )
+    except CliError as exc:
+        assert "will not allow posting a story" in str(exc)
+    else:
+        raise AssertionError("Expected blocked story posting to raise CliError")
+
+    assert len(fake_client.requests) == 1
+    assert isinstance(fake_client.requests[0], functions.stories.CanSendStoryRequest)
+    assert fake_client.uploads == []

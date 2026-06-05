@@ -369,18 +369,13 @@ async def can_post_story(runtime: RuntimeConfig, *, as_peer: str) -> dict[str, A
         store = Store(runtime.db_path, read_only=True) if runtime.db_path.exists() else None
         try:
             peer = await resolve_input_peer(client, store, as_peer)
-            try:
-                result = await client(functions.stories.CanSendStoryRequest(peer=peer))
-            except RPCError as exc:
-                return {
-                    "can_post": False,
-                    "as": as_peer,
-                    "error": str(exc),
-                }
+            ok, result_or_error = await story_post_eligibility(client, peer)
+            if not ok:
+                return {"can_post": False, "as": as_peer, "error": result_or_error}
             return {
                 "can_post": True,
                 "as": as_peer,
-                "remaining": getattr(result, "count_remains", None),
+                "remaining": getattr(result_or_error, "count_remains", None),
             }
         finally:
             if store:
@@ -407,6 +402,9 @@ async def post_story_photo(
         store = Store(runtime.db_path, read_only=True) if runtime.db_path.exists() else None
         try:
             peer = await resolve_input_peer(client, store, as_peer)
+            ok, result_or_error = await story_post_eligibility(client, peer)
+            if not ok:
+                raise CliError(f"Telegram will not allow posting a story as `{as_peer}`: {result_or_error}")
             uploaded = await client.upload_file(str(file_path))
             media = types.InputMediaUploadedPhoto(file=uploaded)
             updates = await client(
@@ -453,6 +451,13 @@ async def resolve_input_peer(client: TelegramClient, store: Store | None, value:
         return await client.get_input_entity("me")
     entity = await resolve_entity(client, store, raw)
     return await client.get_input_entity(entity)
+
+
+async def story_post_eligibility(client: TelegramClient, peer: Any) -> tuple[bool, Any]:
+    try:
+        return True, await client(functions.stories.CanSendStoryRequest(peer=peer))
+    except RPCError as exc:
+        return False, str(exc)
 
 
 async def resolve_entity(client: TelegramClient, store: Store | None, value: str | None) -> Any:
