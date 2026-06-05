@@ -63,6 +63,10 @@ tgcli messages list --live --chat @someusername
 tgcli send text --to @someusername --message "hello from tgcli"
 tgcli send file --to @someusername --file ~/Desktop/report.pdf --caption "report"
 
+# Post an image story/status to contacts
+tgcli stories can-post
+tgcli stories post --file ~/Desktop/story.jpg --caption "posted from tgcli"
+
 # Scriptable JSON output
 tgcli --json chats list --limit 10
 tgcli --json messages search "invoice"
@@ -100,6 +104,26 @@ tgcli store stats
 ```
 
 `doctor --connect` checks whether the stored Telegram session is authorized.
+
+## Stories / Statuses
+
+Telegram Stories are supported through Telegram's native Stories API. The initial `tgcli` support posts image stories with optional captions:
+
+```bash
+tgcli stories can-post
+tgcli stories post --file ~/Desktop/story.jpg --caption "posted from tgcli"
+```
+
+By default, stories are posted as your own user account, visible to contacts, and expire after 24 hours. You can change the audience and expiry:
+
+```bash
+tgcli stories post --file story.jpg --caption "public update" --privacy public
+tgcli stories post --file story.jpg --privacy close-friends --period-hours 6 --no-forwards
+```
+
+Telegram requires story media to be a vertical photo or video up to 30 MB. This version posts photos; video stories and media overlays can be added later.
+
+Telegram may require Premium to post user stories, and channels/supergroups need the right admin permissions and enough boosts. Run `tgcli stories can-post` first to check the active account or `tgcli stories can-post --as @channelname` before publishing.
 
 ## Live Smoke Test
 

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import getpass
+import mimetypes
 import platform
+import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -362,6 +364,79 @@ async def send_file(
                 store.close()
 
 
+async def can_post_story(runtime: RuntimeConfig, *, as_peer: str) -> dict[str, Any]:
+    async with connected_client(runtime) as client:
+        store = Store(runtime.db_path, read_only=True) if runtime.db_path.exists() else None
+        try:
+            peer = await resolve_input_peer(client, store, as_peer)
+            try:
+                result = await client(functions.stories.CanSendStoryRequest(peer=peer))
+            except RPCError as exc:
+                return {
+                    "can_post": False,
+                    "as": as_peer,
+                    "error": str(exc),
+                }
+            return {
+                "can_post": True,
+                "as": as_peer,
+                "remaining": getattr(result, "count_remains", None),
+            }
+        finally:
+            if store:
+                store.close()
+
+
+async def post_story_photo(
+    runtime: RuntimeConfig,
+    *,
+    as_peer: str,
+    file_path: Path,
+    caption: str | None,
+    privacy: str,
+    period_hours: int,
+    pinned: bool,
+    noforwards: bool,
+) -> dict[str, Any]:
+    if runtime.read_only:
+        raise CliError("Refusing to post a Telegram story in read-only mode.")
+    validate_story_photo(file_path)
+    period_seconds = story_period_seconds(period_hours)
+    random_id = secrets.randbits(63)
+    async with connected_client(runtime) as client:
+        store = Store(runtime.db_path, read_only=True) if runtime.db_path.exists() else None
+        try:
+            peer = await resolve_input_peer(client, store, as_peer)
+            uploaded = await client.upload_file(str(file_path))
+            media = types.InputMediaUploadedPhoto(file=uploaded)
+            updates = await client(
+                functions.stories.SendStoryRequest(
+                    peer=peer,
+                    media=media,
+                    privacy_rules=story_privacy_rules(privacy),
+                    caption=caption,
+                    random_id=random_id,
+                    period=period_seconds,
+                    pinned=pinned or None,
+                    noforwards=noforwards or None,
+                )
+            )
+            return {
+                "story_id": story_id_from_updates(updates, random_id=random_id),
+                "random_id": random_id,
+                "as": as_peer,
+                "file": str(file_path),
+                "caption": caption,
+                "privacy": privacy,
+                "period_hours": period_hours,
+                "pinned": pinned,
+                "noforwards": noforwards,
+            }
+        finally:
+            if store:
+                store.close()
+
+
 async def list_contacts(runtime: RuntimeConfig, *, limit: int) -> list[dict[str, Any]]:
     async with connected_client(runtime) as client:
         result = await client(functions.contacts.GetContactsRequest(hash=0))
@@ -370,6 +445,14 @@ async def list_contacts(runtime: RuntimeConfig, *, limit: int) -> list[dict[str,
         for contact in contacts[:limit]:
             rows.append(entity_to_public(contact))
         return rows
+
+
+async def resolve_input_peer(client: TelegramClient, store: Store | None, value: str) -> Any:
+    raw = value.strip()
+    if raw in {"me", "self"}:
+        return await client.get_input_entity("me")
+    entity = await resolve_entity(client, store, raw)
+    return await client.get_input_entity(entity)
 
 
 async def resolve_entity(client: TelegramClient, store: Store | None, value: str | None) -> Any:
@@ -550,6 +633,47 @@ def media_type_name(media: Any | None) -> str | None:
     if isinstance(media, types.MessageMediaPoll):
         return "poll"
     return type(media).__name__
+
+
+def story_privacy_rules(privacy: str) -> list[Any]:
+    if privacy == "public":
+        return [types.InputPrivacyValueAllowAll()]
+    if privacy == "contacts":
+        return [types.InputPrivacyValueAllowContacts()]
+    if privacy == "close-friends":
+        return [types.InputPrivacyValueAllowCloseFriends()]
+    raise CliError("Story privacy must be one of: public, contacts, close-friends.")
+
+
+def story_period_seconds(period_hours: int) -> int:
+    periods = {6: 6 * 3600, 12: 12 * 3600, 24: 24 * 3600, 48: 48 * 3600}
+    if period_hours not in periods:
+        raise CliError("Story period must be one of: 6, 12, 24, 48 hours.")
+    return periods[period_hours]
+
+
+def story_id_from_updates(updates: Any, *, random_id: int) -> int | None:
+    for update in getattr(updates, "updates", []) or []:
+        if isinstance(update, types.UpdateStoryID) and getattr(update, "random_id", None) == random_id:
+            return int(update.id)
+    for update in getattr(updates, "updates", []) or []:
+        if isinstance(update, types.UpdateStoryID):
+            return int(update.id)
+    return None
+
+
+def validate_story_photo(file_path: Path) -> None:
+    if not file_path.exists():
+        raise CliError(f"File does not exist: {file_path}")
+    if not file_path.is_file():
+        raise CliError(f"Not a regular file: {file_path}")
+    max_bytes = 30 * 1024 * 1024
+    size = file_path.stat().st_size
+    if size > max_bytes:
+        raise CliError("Telegram story media must be 30 MB or smaller.")
+    mime_type, _ = mimetypes.guess_type(str(file_path))
+    if mime_type is not None and not mime_type.startswith("image/"):
+        raise CliError(f"Story photo must be an image file, got {mime_type}.")
 
 
 def run(coro: Any) -> Any:

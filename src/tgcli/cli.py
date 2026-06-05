@@ -22,11 +22,13 @@ from .output import emit_object, emit_qr_login, emit_rows, eprint
 from .store import Store, public_row, rows_to_public
 from .telegram import (
     auth_status,
+    can_post_story,
     list_contacts,
     list_live_chats,
     list_live_messages,
     login,
     logout,
+    post_story_photo,
     qr_login,
     run,
     search_live_messages,
@@ -81,6 +83,8 @@ def dispatch(args: argparse.Namespace, runtime: RuntimeConfig) -> int:
         return dispatch_messages(args, runtime)
     if command == "send":
         return dispatch_send(args, runtime)
+    if command == "stories":
+        return dispatch_stories(args, runtime)
     if command == "contacts":
         return dispatch_contacts(args, runtime)
     if command == "store":
@@ -93,6 +97,8 @@ def dispatch(args: argparse.Namespace, runtime: RuntimeConfig) -> int:
         print("https://github.com/openclaw/wacli")
         print("https://docs.telethon.dev/")
         print("https://core.telegram.org/api/obtaining_api_id")
+        print("https://core.telegram.org/api/stories")
+        print("https://core.telegram.org/method/stories.sendStory")
         return 0
     if command == "version":
         print(f"tgcli {__version__}")
@@ -238,6 +244,30 @@ def dispatch_send(args: argparse.Namespace, runtime: RuntimeConfig) -> int:
         emit_object(result, json_output=runtime.json_output)
         return 0
     raise CliError(f"Unknown send command: {sub}")
+
+
+def dispatch_stories(args: argparse.Namespace, runtime: RuntimeConfig) -> int:
+    sub = args.stories_command
+    if sub == "can-post":
+        result = run(can_post_story(runtime, as_peer=args.as_peer))
+        emit_object(result, json_output=runtime.json_output)
+        return 0 if result.get("can_post") else 2
+    if sub == "post":
+        result = run(
+            post_story_photo(
+                runtime,
+                as_peer=args.as_peer,
+                file_path=Path(args.file).expanduser(),
+                caption=args.caption,
+                privacy=args.privacy,
+                period_hours=args.period_hours,
+                pinned=args.pinned,
+                noforwards=args.no_forwards,
+            )
+        )
+        emit_object(result, json_output=runtime.json_output)
+        return 0
+    raise CliError(f"Unknown stories command: {sub}")
 
 
 def dispatch_contacts(args: argparse.Namespace, runtime: RuntimeConfig) -> int:
@@ -389,6 +419,30 @@ def build_parser() -> argparse.ArgumentParser:
     send_file_parser.add_argument("--file", required=True)
     send_file_parser.add_argument("--caption", default=None)
     send_file_parser.add_argument("--reply-to", type=int, default=None)
+
+    stories = subparsers.add_parser("stories", help="Post Telegram Stories.")
+    stories_sub = stories.add_subparsers(dest="stories_command", required=True)
+    stories_can_post = stories_sub.add_parser("can-post", help="Check whether a user/channel can post stories.")
+    stories_can_post.add_argument("--as", dest="as_peer", default="me", help="Peer to post as. Default: me.")
+    stories_post = stories_sub.add_parser("post", help="Post an image story with an optional caption.")
+    stories_post.add_argument("--as", dest="as_peer", default="me", help="Peer to post as. Default: me.")
+    stories_post.add_argument("--file", required=True, help="Image file to post as the story media.")
+    stories_post.add_argument("--caption", default=None, help="Story caption.")
+    stories_post.add_argument(
+        "--privacy",
+        choices=["contacts", "public", "close-friends"],
+        default="contacts",
+        help="Story audience. Default: contacts.",
+    )
+    stories_post.add_argument(
+        "--period-hours",
+        type=int,
+        choices=[6, 12, 24, 48],
+        default=24,
+        help="Story lifetime in hours. 48 hours requires Telegram Premium.",
+    )
+    stories_post.add_argument("--pinned", action="store_true", help="Pin the story to the profile after it expires.")
+    stories_post.add_argument("--no-forwards", action="store_true", help="Disable forwards, screenshots, and downloads.")
 
     contacts = subparsers.add_parser("contacts", help="List Telegram contacts.")
     contacts_sub = contacts.add_subparsers(dest="contacts_command", required=True)
