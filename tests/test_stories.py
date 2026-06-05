@@ -7,7 +7,7 @@ from telethon.tl import functions, types
 from tgcli.cli import build_parser
 from tgcli.config import RuntimeConfig
 from tgcli.errors import CliError
-from tgcli.telegram import post_story_photo, story_period_seconds, story_privacy_rules
+from tgcli.telegram import post_story_photo, story_period_seconds, story_privacy_rules, story_targets
 
 
 class FakeStoryClient:
@@ -34,6 +34,40 @@ class FakeStoryClient:
 
     async def __call__(self, request):
         self.requests.append(request)
+        if isinstance(request, functions.stories.GetChatsToSendRequest):
+            return SimpleNamespace(
+                chats=[
+                    types.Channel(
+                        id=777,
+                        title="Story Channel",
+                        photo=types.ChatPhotoEmpty(),
+                        date=None,
+                        creator=True,
+                        left=False,
+                        broadcast=True,
+                        megagroup=False,
+                        restricted=False,
+                        signatures=False,
+                        min=False,
+                        scam=False,
+                        has_link=False,
+                        has_geo=False,
+                        slowmode_enabled=False,
+                        call_active=False,
+                        call_not_empty=False,
+                        fake=False,
+                        gigagroup=False,
+                        noforwards=False,
+                        join_to_send=False,
+                        join_request=False,
+                        forum=False,
+                        stories_hidden=False,
+                        stories_hidden_min=False,
+                        stories_unavailable=False,
+                        access_hash=123,
+                    )
+                ]
+            )
         if isinstance(request, functions.stories.CanSendStoryRequest):
             if self.can_post:
                 return SimpleNamespace(count_remains=3)
@@ -72,6 +106,13 @@ def test_stories_post_parser_defaults() -> None:
     assert args.period_hours == 24
     assert not args.pinned
     assert not args.no_forwards
+
+
+def test_stories_targets_parser() -> None:
+    args = build_parser().parse_args(["stories", "targets"])
+
+    assert args.command == "stories"
+    assert args.stories_command == "targets"
 
 
 def test_story_privacy_rules() -> None:
@@ -155,3 +196,24 @@ def test_post_story_photo_preflights_before_upload(monkeypatch, tmp_path: Path) 
     assert len(fake_client.requests) == 1
     assert isinstance(fake_client.requests[0], functions.stories.CanSendStoryRequest)
     assert fake_client.uploads == []
+
+
+def test_story_targets(monkeypatch, tmp_path: Path) -> None:
+    runtime = runtime_for(tmp_path)
+    fake_client = FakeStoryClient()
+
+    monkeypatch.setattr("tgcli.telegram.api_credentials", lambda _runtime: (123, "hash"))
+    monkeypatch.setattr("tgcli.telegram.make_client", lambda *_args, **_kwargs: fake_client)
+
+    result = asyncio.run(story_targets(runtime))
+
+    assert result == [
+        {
+            "chat_id": -1000000000777,
+            "title": "Story Channel",
+            "kind": "channel",
+            "username": None,
+            "phone": None,
+        }
+    ]
+    assert isinstance(fake_client.requests[0], functions.stories.GetChatsToSendRequest)

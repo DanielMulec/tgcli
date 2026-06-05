@@ -34,6 +34,7 @@ from .telegram import (
     search_live_messages,
     send_file,
     send_text,
+    story_targets,
     sync_dialogs,
 )
 
@@ -252,6 +253,10 @@ def dispatch_stories(args: argparse.Namespace, runtime: RuntimeConfig) -> int:
         result = run(can_post_story(runtime, as_peer=args.as_peer))
         emit_object(result, json_output=runtime.json_output)
         return 0 if result.get("can_post") else 2
+    if sub == "targets":
+        rows = run(story_targets(runtime))
+        emit_rows(rows, CHAT_COLUMNS, json_output=runtime.json_output, full=runtime.full_output)
+        return 0
     if sub == "post":
         result = run(
             post_story_photo(
@@ -424,6 +429,7 @@ def build_parser() -> argparse.ArgumentParser:
     stories_sub = stories.add_subparsers(dest="stories_command", required=True)
     stories_can_post = stories_sub.add_parser("can-post", help="Check whether a user/channel can post stories.")
     stories_can_post.add_argument("--as", dest="as_peer", default="me", help="Peer to post as. Default: me.")
+    stories_sub.add_parser("targets", help="List channels/supergroups where Telegram allows this account to post stories.")
     stories_post = stories_sub.add_parser("post", help="Post an image story with an optional caption.")
     stories_post.add_argument("--as", dest="as_peer", default="me", help="Peer to post as. Default: me.")
     stories_post.add_argument("--file", required=True, help="Image file to post as the story media.")

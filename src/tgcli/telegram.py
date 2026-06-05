@@ -435,6 +435,12 @@ async def post_story_photo(
                 store.close()
 
 
+async def story_targets(runtime: RuntimeConfig) -> list[dict[str, Any]]:
+    async with connected_client(runtime) as client:
+        result = await client(functions.stories.GetChatsToSendRequest())
+        return [entity_to_public(chat) for chat in getattr(result, "chats", []) or []]
+
+
 async def list_contacts(runtime: RuntimeConfig, *, limit: int) -> list[dict[str, Any]]:
     async with connected_client(runtime) as client:
         result = await client(functions.contacts.GetContactsRequest(hash=0))

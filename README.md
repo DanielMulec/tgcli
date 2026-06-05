@@ -65,6 +65,7 @@ tgcli send file --to @someusername --file ~/Desktop/report.pdf --caption "report
 
 # Post an image story/status to contacts
 tgcli stories can-post
+tgcli stories targets
 tgcli stories post --file ~/Desktop/story.jpg --caption "posted from tgcli"
 
 # Scriptable JSON output
@@ -111,6 +112,7 @@ Telegram Stories are supported through Telegram's native Stories API. The initia
 
 ```bash
 tgcli stories can-post
+tgcli stories targets
 tgcli stories post --file ~/Desktop/story.jpg --caption "posted from tgcli"
 ```
 
@@ -123,7 +125,7 @@ tgcli stories post --file story.jpg --privacy close-friends --period-hours 6 --n
 
 Telegram requires story media to be a vertical photo or video up to 30 MB. This version posts photos; video stories and media overlays can be added later.
 
-Telegram may require Premium to post user stories, and channels/supergroups need the right admin permissions and enough boosts. Run `tgcli stories can-post` first to check the active account or `tgcli stories can-post --as @channelname` before publishing.
+Telegram may require Premium to post user stories, and channels/supergroups need the right admin permissions and enough boosts. Run `tgcli stories can-post` first to check the active account, `tgcli stories targets` to list channel/supergroup targets Telegram exposes for this account, or `tgcli stories can-post --as @channelname` before publishing.
 
 ## Live Smoke Test
 
