@@ -10,6 +10,7 @@ from tgcli.errors import CliError
 from tgcli.telegram import (
     post_story_photo,
     story_config_from_app_config,
+    story_history,
     story_limits,
     story_period_seconds,
     story_privacy_rules,
@@ -56,6 +57,42 @@ class FakeStoryClient:
                         types.JsonObjectValue("unrelated", types.JsonString("ignored")),
                     ]
                 )
+            )
+        if isinstance(request, functions.stories.GetPeerStoriesRequest):
+            return types.stories.PeerStories(
+                stories=types.PeerStories(
+                    peer=types.PeerUser(user_id=42),
+                    stories=[
+                        types.StoryItem(
+                            id=5,
+                            date=None,
+                            expire_date=None,
+                            media=types.MessageMediaEmpty(),
+                            caption="active story",
+                            out=True,
+                            contacts=True,
+                        )
+                    ],
+                ),
+                chats=[],
+                users=[],
+            )
+        if isinstance(request, functions.stories.GetStoriesArchiveRequest):
+            return types.stories.Stories(
+                count=1,
+                stories=[
+                    types.StoryItem(
+                        id=4,
+                        date=None,
+                        expire_date=None,
+                        media=types.MessageMediaEmpty(),
+                        caption="archived story",
+                        out=True,
+                        public=True,
+                    )
+                ],
+                chats=[],
+                users=[],
             )
         if isinstance(request, functions.stories.GetChatsToSendRequest):
             return SimpleNamespace(
@@ -136,6 +173,15 @@ def test_stories_targets_parser() -> None:
 
     assert args.command == "stories"
     assert args.stories_command == "targets"
+
+
+def test_stories_history_parser() -> None:
+    args = build_parser().parse_args(["stories", "history", "--limit", "5"])
+
+    assert args.command == "stories"
+    assert args.stories_command == "history"
+    assert args.as_peer == "me"
+    assert args.limit == 5
 
 
 def test_story_privacy_rules() -> None:
@@ -284,3 +330,22 @@ def test_story_limits(monkeypatch, tmp_path: Path) -> None:
     assert "unrelated" not in result["raw_config"]
     assert isinstance(fake_client.requests[0], functions.help.GetAppConfigRequest)
     assert isinstance(fake_client.requests[1], functions.stories.CanSendStoryRequest)
+
+
+def test_story_history(monkeypatch, tmp_path: Path) -> None:
+    runtime = runtime_for(tmp_path)
+    fake_client = FakeStoryClient()
+
+    monkeypatch.setattr("tgcli.telegram.api_credentials", lambda _runtime: (123, "hash"))
+    monkeypatch.setattr("tgcli.telegram.make_client", lambda *_args, **_kwargs: fake_client)
+
+    result = asyncio.run(story_history(runtime, as_peer="me", limit=5))
+
+    assert result["active_count"] == 1
+    assert result["archive_count"] == 1
+    assert result["active"][0]["caption"] == "active story"
+    assert result["active"][0]["contacts"] is True
+    assert result["archive"][0]["caption"] == "archived story"
+    assert result["archive"][0]["public"] is True
+    assert isinstance(fake_client.requests[0], functions.stories.GetPeerStoriesRequest)
+    assert isinstance(fake_client.requests[1], functions.stories.GetStoriesArchiveRequest)

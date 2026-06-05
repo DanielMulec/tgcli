@@ -34,6 +34,7 @@ from .telegram import (
     search_live_messages,
     send_file,
     send_text,
+    story_history,
     story_limits,
     story_targets,
     sync_dialogs,
@@ -262,6 +263,10 @@ def dispatch_stories(args: argparse.Namespace, runtime: RuntimeConfig) -> int:
         result = run(story_limits(runtime, as_peer=args.as_peer))
         emit_object(result, json_output=runtime.json_output)
         return 0
+    if sub == "history":
+        result = run(story_history(runtime, as_peer=args.as_peer, limit=args.limit))
+        emit_object(result, json_output=runtime.json_output)
+        return 0
     if sub == "post":
         result = run(
             post_story_photo(
@@ -437,6 +442,9 @@ def build_parser() -> argparse.ArgumentParser:
     stories_sub.add_parser("targets", help="List channels/supergroups where Telegram allows this account to post stories.")
     stories_limits = stories_sub.add_parser("limits", help="Show Telegram story limits and live posting eligibility.")
     stories_limits.add_argument("--as", dest="as_peer", default="me", help="Peer to check. Default: me.")
+    stories_history = stories_sub.add_parser("history", help="Show active and archived story metadata.")
+    stories_history.add_argument("--as", dest="as_peer", default="me", help="Peer to inspect. Default: me.")
+    stories_history.add_argument("--limit", type=int, default=20, help="Archived stories to fetch. Default: 20.")
     stories_post = stories_sub.add_parser("post", help="Post an image story with an optional caption.")
     stories_post.add_argument("--as", dest="as_peer", default="me", help="Peer to post as. Default: me.")
     stories_post.add_argument("--file", required=True, help="Image file to post as the story media.")

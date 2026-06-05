@@ -483,6 +483,33 @@ async def story_limits(runtime: RuntimeConfig, *, as_peer: str) -> dict[str, Any
     }
 
 
+async def story_history(runtime: RuntimeConfig, *, as_peer: str, limit: int) -> dict[str, Any]:
+    if limit <= 0:
+        raise CliError("Story history limit must be greater than zero.")
+    async with connected_client(runtime) as client:
+        store = Store(runtime.db_path, read_only=True) if runtime.db_path.exists() else None
+        try:
+            peer = await resolve_input_peer(client, store, as_peer)
+            active_result = await client(functions.stories.GetPeerStoriesRequest(peer=peer))
+            archive_result = await client(
+                functions.stories.GetStoriesArchiveRequest(peer=peer, offset_id=0, limit=limit)
+            )
+        finally:
+            if store:
+                store.close()
+
+    active_peer_stories = getattr(active_result, "stories", None)
+    active_stories = getattr(active_peer_stories, "stories", []) or []
+    archive_stories = getattr(archive_result, "stories", []) or []
+    return {
+        "as": as_peer,
+        "active_count": len(active_stories),
+        "archive_count": getattr(archive_result, "count", len(archive_stories)),
+        "active": [story_to_public(story) for story in active_stories],
+        "archive": [story_to_public(story) for story in archive_stories],
+    }
+
+
 async def list_contacts(runtime: RuntimeConfig, *, limit: int) -> list[dict[str, Any]]:
     async with connected_client(runtime) as client:
         result = await client(functions.contacts.GetContactsRequest(hash=0))
@@ -535,6 +562,23 @@ def telegram_json_value(value: Any) -> Any:
 def story_wait_seconds(error: str) -> int | None:
     match = re.search(r"STORY_SEND_FLOOD_(?:WEEKLY|MONTHLY)_(\d+)", error)
     return int(match.group(1)) if match else None
+
+
+def story_to_public(story: Any) -> dict[str, Any]:
+    date = getattr(story, "date", None)
+    expire_date = getattr(story, "expire_date", None)
+    return {
+        "id": getattr(story, "id", None),
+        "type": type(story).__name__,
+        "date": date.isoformat() if date else None,
+        "expire_date": expire_date.isoformat() if expire_date else None,
+        "caption": getattr(story, "caption", None),
+        "out": getattr(story, "out", None),
+        "public": getattr(story, "public", None),
+        "contacts": getattr(story, "contacts", None),
+        "close_friends": getattr(story, "close_friends", None),
+        "pinned": getattr(story, "pinned", None),
+    }
 
 
 async def resolve_entity(client: TelegramClient, store: Store | None, value: str | None) -> Any:
