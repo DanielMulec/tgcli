@@ -1,6 +1,8 @@
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+from pytest import MonkeyPatch
 
 from tgcli.cli import build_parser, should_use_qr_login
 from tgcli.config import RuntimeConfig
@@ -19,7 +21,7 @@ class FakeUser:
 
 class FakeQR:
     url = "tg://login?token=test"
-    expires = datetime.now(timezone.utc) + timedelta(seconds=30)
+    expires = datetime.now(UTC) + timedelta(seconds=30)
 
     async def wait(self, timeout: float | None = None) -> FakeUser:
         return FakeUser()
@@ -64,7 +66,7 @@ def test_smoke_test_parser_defaults() -> None:
     assert args.per_chat == 50
 
 
-def test_qr_login_success_path(monkeypatch, tmp_path: Path) -> None:
+def test_qr_login_success_path(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     runtime = RuntimeConfig(
         store_dir=tmp_path,
         account="default",
@@ -75,7 +77,7 @@ def test_qr_login_success_path(monkeypatch, tmp_path: Path) -> None:
     )
     seen: list[tuple[str, datetime, int]] = []
 
-    monkeypatch.setattr("tgcli.telegram.make_client", lambda *_args, **_kwargs: FakeClient())
+    monkeypatch.setattr("tgcli.telegram_auth.make_client", lambda *_args, **_kwargs: FakeClient())
 
     result = asyncio.run(
         qr_login(

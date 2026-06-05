@@ -1,7 +1,9 @@
 import asyncio
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
+from pytest import MonkeyPatch
 from telethon.tl import functions, types
 
 from tgcli.cli import build_parser
@@ -22,8 +24,8 @@ from tgcli.telegram import (
 class FakeStoryClient:
     def __init__(self, *, can_post: bool = True) -> None:
         self.can_post = can_post
-        self.requests = []
-        self.uploads = []
+        self.requests: list[object] = []
+        self.uploads: list[str] = []
 
     async def connect(self) -> None:
         pass
@@ -34,111 +36,119 @@ class FakeStoryClient:
     async def is_user_authorized(self) -> bool:
         return True
 
-    async def get_input_entity(self, value):
+    async def get_input_entity(self, value: object) -> str:
         return f"input:{value}"
 
-    async def upload_file(self, path: str):
+    async def upload_file(self, path: str) -> str:
         self.uploads.append(path)
         return "uploaded-file"
 
-    async def __call__(self, request):
+    async def __call__(self, request: object) -> object:
         self.requests.append(request)
-        if isinstance(request, functions.help.GetAppConfigRequest):
-            return SimpleNamespace(
-                config=types.JsonObject(
-                    [
-                        types.JsonObjectValue("stories_posting", types.JsonString("enabled")),
-                        types.JsonObjectValue("story_expiring_limit_default", types.JsonNumber(1)),
-                        types.JsonObjectValue("story_expiring_limit_premium", types.JsonNumber(100)),
-                        types.JsonObjectValue("stories_sent_weekly_limit_default", types.JsonNumber(3)),
-                        types.JsonObjectValue("stories_sent_monthly_limit_default", types.JsonNumber(10)),
-                        types.JsonObjectValue("story_caption_length_limit_default", types.JsonNumber(200)),
-                        types.JsonObjectValue("story_expire_period", types.JsonNumber(86400)),
-                        types.JsonObjectValue("unrelated", types.JsonString("ignored")),
-                    ]
-                )
-            )
-        if isinstance(request, functions.stories.GetPeerStoriesRequest):
-            return types.stories.PeerStories(
-                stories=types.PeerStories(
-                    peer=types.PeerUser(user_id=42),
-                    stories=[
-                        types.StoryItem(
-                            id=5,
-                            date=None,
-                            expire_date=None,
-                            media=types.MessageMediaEmpty(),
-                            caption="active story",
-                            out=True,
-                            contacts=True,
-                        )
-                    ],
-                ),
-                chats=[],
-                users=[],
-            )
-        if isinstance(request, functions.stories.GetStoriesArchiveRequest):
-            return types.stories.Stories(
-                count=1,
-                stories=[
-                    types.StoryItem(
-                        id=4,
-                        date=None,
-                        expire_date=None,
-                        media=types.MessageMediaEmpty(),
-                        caption="archived story",
-                        out=True,
-                        public=True,
-                    )
-                ],
-                chats=[],
-                users=[],
-            )
-        if isinstance(request, functions.stories.GetChatsToSendRequest):
-            return SimpleNamespace(
-                chats=[
-                    types.Channel(
-                        id=777,
-                        title="Story Channel",
-                        photo=types.ChatPhotoEmpty(),
-                        date=None,
-                        creator=True,
-                        left=False,
-                        broadcast=True,
-                        megagroup=False,
-                        restricted=False,
-                        signatures=False,
-                        min=False,
-                        scam=False,
-                        has_link=False,
-                        has_geo=False,
-                        slowmode_enabled=False,
-                        call_active=False,
-                        call_not_empty=False,
-                        fake=False,
-                        gigagroup=False,
-                        noforwards=False,
-                        join_to_send=False,
-                        join_request=False,
-                        forum=False,
-                        stories_hidden=False,
-                        stories_hidden_min=False,
-                        stories_unavailable=False,
-                        access_hash=123,
-                    )
-                ]
-            )
-        if isinstance(request, functions.stories.CanSendStoryRequest):
-            if self.can_post:
-                return SimpleNamespace(count_remains=3)
-            raise FakeStoryRpcError("PREMIUM_ACCOUNT_REQUIRED")
-        if isinstance(request, functions.stories.SendStoryRequest):
-            return SimpleNamespace(
-                updates=[
-                    types.UpdateStoryID(id=321, random_id=request.random_id),
-                ]
-            )
+        for request_type, handler in self.request_handlers():
+            if isinstance(request, request_type):
+                return handler(request)
         raise AssertionError(f"Unexpected request: {request!r}")
+
+    def request_handlers(self) -> list[tuple[type[object], Callable[[object], object]]]:
+        return [
+            (functions.help.GetAppConfigRequest, self.app_config),
+            (functions.stories.GetPeerStoriesRequest, self.peer_stories),
+            (functions.stories.GetStoriesArchiveRequest, self.stories_archive),
+            (functions.stories.GetChatsToSendRequest, self.chats_to_send),
+            (functions.stories.CanSendStoryRequest, self.can_send_story),
+            (functions.stories.SendStoryRequest, self.send_story),
+        ]
+
+    def app_config(self, request: object) -> object:
+        return SimpleNamespace(config=types.JsonObject(story_config_values()))
+
+    def peer_stories(self, request: object) -> object:
+        return types.stories.PeerStories(
+            stories=types.PeerStories(
+                peer=types.PeerUser(user_id=42),
+                stories=[story_item(5, "active story", contacts=True)],
+            ),
+            chats=[],
+            users=[],
+        )
+
+    def stories_archive(self, request: object) -> object:
+        return types.stories.Stories(
+            count=1,
+            stories=[story_item(4, "archived story", public=True)],
+            chats=[],
+            users=[],
+        )
+
+    def chats_to_send(self, request: object) -> object:
+        return SimpleNamespace(chats=[story_channel()])
+
+    def can_send_story(self, request: object) -> object:
+        if self.can_post:
+            return SimpleNamespace(count_remains=3)
+        raise FakeStoryRpcError("PREMIUM_ACCOUNT_REQUIRED")
+
+    def send_story(self, request: object) -> object:
+        return SimpleNamespace(updates=[types.UpdateStoryID(id=321, random_id=request.random_id)])
+
+
+def story_config_values() -> list[object]:
+    return [
+        types.JsonObjectValue("stories_posting", types.JsonString("enabled")),
+        types.JsonObjectValue("story_expiring_limit_default", types.JsonNumber(1)),
+        types.JsonObjectValue("story_expiring_limit_premium", types.JsonNumber(100)),
+        types.JsonObjectValue("stories_sent_weekly_limit_default", types.JsonNumber(3)),
+        types.JsonObjectValue("stories_sent_monthly_limit_default", types.JsonNumber(10)),
+        types.JsonObjectValue("story_caption_length_limit_default", types.JsonNumber(200)),
+        types.JsonObjectValue("story_expire_period", types.JsonNumber(86400)),
+        types.JsonObjectValue("unrelated", types.JsonString("ignored")),
+    ]
+
+
+def story_item(identifier: int, caption: str, *, contacts: bool = False, public: bool = False) -> object:
+    return types.StoryItem(
+        id=identifier,
+        date=None,
+        expire_date=None,
+        media=types.MessageMediaEmpty(),
+        caption=caption,
+        out=True,
+        contacts=contacts,
+        public=public,
+    )
+
+
+def story_channel() -> object:
+    return types.Channel(
+        id=777,
+        title="Story Channel",
+        photo=types.ChatPhotoEmpty(),
+        date=None,
+        creator=True,
+        left=False,
+        broadcast=True,
+        megagroup=False,
+        restricted=False,
+        signatures=False,
+        min=False,
+        scam=False,
+        has_link=False,
+        has_geo=False,
+        slowmode_enabled=False,
+        call_active=False,
+        call_not_empty=False,
+        fake=False,
+        gigagroup=False,
+        noforwards=False,
+        join_to_send=False,
+        join_request=False,
+        forum=False,
+        stories_hidden=False,
+        stories_hidden_min=False,
+        stories_unavailable=False,
+        access_hash=123,
+    )
 
 
 class FakeStoryRpcError(Exception):
@@ -218,14 +228,14 @@ def test_story_config_from_app_config_filters_story_keys() -> None:
     }
 
 
-def test_post_story_photo_builds_send_story_request(monkeypatch, tmp_path: Path) -> None:
+def test_post_story_photo_builds_send_story_request(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     runtime = runtime_for(tmp_path)
     photo = tmp_path / "story.jpg"
     photo.write_bytes(b"fake-jpeg")
     fake_client = FakeStoryClient()
 
-    monkeypatch.setattr("tgcli.telegram.api_credentials", lambda _runtime: (123, "hash"))
-    monkeypatch.setattr("tgcli.telegram.make_client", lambda *_args, **_kwargs: fake_client)
+    monkeypatch.setattr("tgcli.telegram_client.api_credentials", lambda _runtime: (123, "hash"))
+    monkeypatch.setattr("tgcli.telegram_client.make_client", lambda *_args, **_kwargs: fake_client)
 
     result = asyncio.run(
         post_story_photo(
@@ -257,15 +267,15 @@ def test_post_story_photo_builds_send_story_request(monkeypatch, tmp_path: Path)
     assert isinstance(request.privacy_rules[0], types.InputPrivacyValueAllowContacts)
 
 
-def test_post_story_photo_preflights_before_upload(monkeypatch, tmp_path: Path) -> None:
+def test_post_story_photo_preflights_before_upload(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     runtime = runtime_for(tmp_path)
     photo = tmp_path / "story.jpg"
     photo.write_bytes(b"fake-jpeg")
     fake_client = FakeStoryClient(can_post=False)
 
-    monkeypatch.setattr("tgcli.telegram.RPCError", FakeStoryRpcError)
-    monkeypatch.setattr("tgcli.telegram.api_credentials", lambda _runtime: (123, "hash"))
-    monkeypatch.setattr("tgcli.telegram.make_client", lambda *_args, **_kwargs: fake_client)
+    monkeypatch.setattr("tgcli.telegram_stories.RPCError", FakeStoryRpcError)
+    monkeypatch.setattr("tgcli.telegram_client.api_credentials", lambda _runtime: (123, "hash"))
+    monkeypatch.setattr("tgcli.telegram_client.make_client", lambda *_args, **_kwargs: fake_client)
 
     try:
         asyncio.run(
@@ -290,12 +300,12 @@ def test_post_story_photo_preflights_before_upload(monkeypatch, tmp_path: Path) 
     assert fake_client.uploads == []
 
 
-def test_story_targets(monkeypatch, tmp_path: Path) -> None:
+def test_story_targets(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     runtime = runtime_for(tmp_path)
     fake_client = FakeStoryClient()
 
-    monkeypatch.setattr("tgcli.telegram.api_credentials", lambda _runtime: (123, "hash"))
-    monkeypatch.setattr("tgcli.telegram.make_client", lambda *_args, **_kwargs: fake_client)
+    monkeypatch.setattr("tgcli.telegram_client.api_credentials", lambda _runtime: (123, "hash"))
+    monkeypatch.setattr("tgcli.telegram_client.make_client", lambda *_args, **_kwargs: fake_client)
 
     result = asyncio.run(story_targets(runtime))
 
@@ -311,12 +321,12 @@ def test_story_targets(monkeypatch, tmp_path: Path) -> None:
     assert isinstance(fake_client.requests[0], functions.stories.GetChatsToSendRequest)
 
 
-def test_story_limits(monkeypatch, tmp_path: Path) -> None:
+def test_story_limits(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     runtime = runtime_for(tmp_path)
     fake_client = FakeStoryClient()
 
-    monkeypatch.setattr("tgcli.telegram.api_credentials", lambda _runtime: (123, "hash"))
-    monkeypatch.setattr("tgcli.telegram.make_client", lambda *_args, **_kwargs: fake_client)
+    monkeypatch.setattr("tgcli.telegram_client.api_credentials", lambda _runtime: (123, "hash"))
+    monkeypatch.setattr("tgcli.telegram_client.make_client", lambda *_args, **_kwargs: fake_client)
 
     result = asyncio.run(story_limits(runtime, as_peer="me"))
 
@@ -332,12 +342,12 @@ def test_story_limits(monkeypatch, tmp_path: Path) -> None:
     assert isinstance(fake_client.requests[1], functions.stories.CanSendStoryRequest)
 
 
-def test_story_history(monkeypatch, tmp_path: Path) -> None:
+def test_story_history(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     runtime = runtime_for(tmp_path)
     fake_client = FakeStoryClient()
 
-    monkeypatch.setattr("tgcli.telegram.api_credentials", lambda _runtime: (123, "hash"))
-    monkeypatch.setattr("tgcli.telegram.make_client", lambda *_args, **_kwargs: fake_client)
+    monkeypatch.setattr("tgcli.telegram_client.api_credentials", lambda _runtime: (123, "hash"))
+    monkeypatch.setattr("tgcli.telegram_client.make_client", lambda *_args, **_kwargs: fake_client)
 
     result = asyncio.run(story_history(runtime, as_peer="me", limit=5))
 

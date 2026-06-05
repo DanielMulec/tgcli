@@ -1,15 +1,16 @@
 from __future__ import annotations
 
-import json
 import sqlite3
+import types
+from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
 
 from .config import chmod_private_file, ensure_parent
 from .errors import CliError
-
+from .store_json import json_dumps, json_value, raw_json_value, required_row_id, utc_now
+from .store_sqlite import execute, fetch_all, fetch_one, optional_row_dict, required_row, row_dicts, row_int
+from .types import JsonObject, SQLiteValue
 
 SCHEMA_VERSION = 1
 
@@ -24,7 +25,7 @@ class ChatRecord:
     unread_count: int | None = None
     pinned: bool | None = None
     archived: bool | None = None
-    raw: dict[str, Any] | None = None
+    raw: JsonObject | None = None
 
 
 @dataclass(frozen=True)
@@ -39,11 +40,11 @@ class MessageRecord:
     outgoing: bool | None = None
     media_type: str | None = None
     reply_to_msg_id: int | None = None
-    raw: dict[str, Any] | None = None
+    raw: JsonObject | None = None
 
 
 class Store:
-    def __init__(self, path: Path, *, read_only: bool = False):
+    def __init__(self, path: Path, *, read_only: bool = False) -> None:
         self.path = path
         self.read_only = read_only
         if read_only and not path.exists():
@@ -62,10 +63,15 @@ class Store:
     def close(self) -> None:
         self.conn.close()
 
-    def __enter__(self) -> "Store":
+    def __enter__(self) -> Store:
         return self
 
-    def __exit__(self, exc_type: Any, exc: BaseException | None, tb: Any) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: types.TracebackType | None,
+    ) -> None:
         self.close()
 
     def migrate(self) -> None:
@@ -154,10 +160,11 @@ class Store:
     def upsert_message(self, record: MessageRecord) -> int:
         self._ensure_writable()
         now = utc_now()
-        existing = self.conn.execute(
+        existing = fetch_one(
+            self.conn,
             "SELECT id FROM messages WHERE chat_id=? AND message_id=?",
             (record.chat_id, record.message_id),
-        ).fetchone()
+        )
         params = (
             record.chat_id,
             record.message_id,
@@ -173,8 +180,9 @@ class Store:
             now,
         )
         if existing:
-            row_id = int(existing["id"])
-            self.conn.execute(
+            row_id = row_int(existing, "id")
+            execute(
+                self.conn,
                 """
                 UPDATE messages SET
                   chat_id=?, message_id=?, date=?, sender_id=?, sender_name=?,
@@ -182,10 +190,11 @@ class Store:
                   raw_json=?, synced_at=?
                 WHERE id=?
                 """,
-                params + (row_id,),
+                (*params, row_id),
             )
         else:
-            cur = self.conn.execute(
+            cur = execute(
+                self.conn,
                 """
                 INSERT INTO messages (
                   chat_id, message_id, date, sender_id, sender_name, chat_title,
@@ -194,8 +203,9 @@ class Store:
                 """,
                 params,
             )
-            row_id = int(cur.lastrowid)
-        self.conn.execute(
+            row_id = required_row_id(cur.lastrowid)
+        execute(
+            self.conn,
             "INSERT OR REPLACE INTO messages_fts(rowid, text, sender_name, chat_title) VALUES (?, ?, ?, ?)",
             (row_id, record.text or "", record.sender_name or "", record.chat_title or ""),
         )
@@ -204,23 +214,24 @@ class Store:
     def commit(self) -> None:
         self.conn.commit()
 
-    def chats(self, *, query: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+    def chats(self, *, query: str | None = None, limit: int = 50) -> list[dict[str, SQLiteValue]]:
         sql = "SELECT * FROM chats"
-        params: list[Any] = []
+        params: list[SQLiteValue] = []
         if query:
             sql += " WHERE title LIKE ? OR username LIKE ? OR phone LIKE ?"
             pattern = f"%{query}%"
             params.extend([pattern, pattern, pattern])
         sql += " ORDER BY updated_at DESC, title COLLATE NOCASE LIMIT ?"
         params.append(limit)
-        return [dict(row) for row in self.conn.execute(sql, params)]
+        return row_dicts(fetch_all(self.conn, sql, params))
 
-    def chat(self, chat_id: int) -> dict[str, Any] | None:
-        row = self.conn.execute("SELECT * FROM chats WHERE chat_id=?", (chat_id,)).fetchone()
-        return dict(row) if row else None
+    def chat(self, chat_id: int) -> dict[str, SQLiteValue] | None:
+        row = fetch_one(self.conn, "SELECT * FROM chats WHERE chat_id=?", (chat_id,))
+        return optional_row_dict(row)
 
-    def find_chats(self, query: str, *, limit: int = 20) -> list[dict[str, Any]]:
-        exact = self.conn.execute(
+    def find_chats(self, query: str, *, limit: int = 20) -> list[dict[str, SQLiteValue]]:
+        exact = fetch_all(
+            self.conn,
             """
             SELECT * FROM chats
             WHERE username = ? OR phone = ? OR title = ? OR CAST(chat_id AS TEXT) = ?
@@ -228,11 +239,12 @@ class Store:
             LIMIT ?
             """,
             (query.lstrip("@"), query, query, query, limit),
-        ).fetchall()
+        )
         if exact:
-            return [dict(row) for row in exact]
+            return row_dicts(exact)
         pattern = f"%{query.lstrip('@')}%"
-        rows = self.conn.execute(
+        rows = fetch_all(
+            self.conn,
             """
             SELECT * FROM chats
             WHERE title LIKE ? OR username LIKE ? OR phone LIKE ?
@@ -240,15 +252,16 @@ class Store:
             LIMIT ?
             """,
             (pattern, pattern, pattern, limit),
-        ).fetchall()
-        return [dict(row) for row in rows]
+        )
+        return row_dicts(rows)
 
     def max_message_id(self, chat_id: int) -> int:
-        row = self.conn.execute(
+        row = fetch_one(
+            self.conn,
             "SELECT MAX(message_id) AS max_id FROM messages WHERE chat_id=?",
             (chat_id,),
-        ).fetchone()
-        return int(row["max_id"] or 0)
+        )
+        return row_int(row, "max_id") if row is not None else 0
 
     def messages(
         self,
@@ -256,9 +269,9 @@ class Store:
         chat_id: int | None = None,
         limit: int = 50,
         before: str | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict[str, SQLiteValue]]:
         sql = "SELECT * FROM messages"
-        params: list[Any] = []
+        params: list[SQLiteValue] = []
         clauses: list[str] = []
         if chat_id is not None:
             clauses.append("chat_id=?")
@@ -270,14 +283,15 @@ class Store:
             sql += " WHERE " + " AND ".join(clauses)
         sql += " ORDER BY date DESC, message_id DESC LIMIT ?"
         params.append(limit)
-        return [dict(row) for row in self.conn.execute(sql, params)]
+        return row_dicts(fetch_all(self.conn, sql, params))
 
-    def message(self, chat_id: int, message_id: int) -> dict[str, Any] | None:
-        row = self.conn.execute(
+    def message(self, chat_id: int, message_id: int) -> dict[str, SQLiteValue] | None:
+        row = fetch_one(
+            self.conn,
             "SELECT * FROM messages WHERE chat_id=? AND message_id=?",
             (chat_id, message_id),
-        ).fetchone()
-        return dict(row) if row else None
+        )
+        return optional_row_dict(row)
 
     def search_messages(
         self,
@@ -286,15 +300,16 @@ class Store:
         chat_id: int | None = None,
         limit: int = 50,
         raw_fts: bool = False,
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict[str, SQLiteValue]]:
         match = query if raw_fts else quote_fts_phrase(query)
-        params: list[Any] = [match]
+        params: list[SQLiteValue] = [match]
         where = "messages_fts MATCH ?"
         if chat_id is not None:
             where += " AND m.chat_id=?"
             params.append(chat_id)
         params.append(limit)
-        rows = self.conn.execute(
+        rows = fetch_all(
+            self.conn,
             f"""
             SELECT
               m.*,
@@ -308,22 +323,22 @@ class Store:
             LIMIT ?
             """,
             params,
-        ).fetchall()
-        return [dict(row) for row in rows]
+        )
+        return row_dicts(rows)
 
-    def stats(self) -> dict[str, Any]:
-        chat_count = self.conn.execute("SELECT COUNT(*) AS n FROM chats").fetchone()["n"]
-        message_count = self.conn.execute("SELECT COUNT(*) AS n FROM messages").fetchone()["n"]
-        oldest = self.conn.execute("SELECT MIN(date) AS d FROM messages").fetchone()["d"]
-        newest = self.conn.execute("SELECT MAX(date) AS d FROM messages").fetchone()["d"]
+    def stats(self) -> JsonObject:
+        chat_count = row_int(required_row(fetch_one(self.conn, "SELECT COUNT(*) AS n FROM chats")), "n")
+        message_count = row_int(required_row(fetch_one(self.conn, "SELECT COUNT(*) AS n FROM messages")), "n")
+        oldest = optional_row_dict(fetch_one(self.conn, "SELECT MIN(date) AS d FROM messages")) or {}
+        newest = optional_row_dict(fetch_one(self.conn, "SELECT MAX(date) AS d FROM messages")) or {}
         size = self.path.stat().st_size if self.path.exists() else 0
         return {
             "path": str(self.path),
             "size_bytes": size,
             "chats": chat_count,
             "messages": message_count,
-            "oldest_message": oldest,
-            "newest_message": newest,
+            "oldest_message": oldest.get("d"),
+            "newest_message": newest.get("d"),
         }
 
     def _ensure_writable(self) -> None:
@@ -331,31 +346,19 @@ class Store:
             raise CliError("Store is open in read-only mode.")
 
 
-def rows_to_public(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [public_row(dict(row)) for row in rows]
+def rows_to_public(rows: Iterable[dict[str, SQLiteValue]]) -> list[JsonObject]:
+    return [public_row(row) for row in rows]
 
 
-def public_row(row: dict[str, Any]) -> dict[str, Any]:
+def public_row(row: dict[str, SQLiteValue]) -> JsonObject:
     cleaned = dict(row)
     raw = cleaned.pop("raw_json", None)
+    public = {key: json_value(value) for key, value in cleaned.items()}
     if raw:
-        try:
-            cleaned["raw"] = json.loads(raw)
-        except json.JSONDecodeError:
-            cleaned["raw"] = raw
-    return cleaned
+        public["raw"] = json_value(raw_json_value(raw))
+    return public
 
 
 def quote_fts_phrase(query: str) -> str:
     escaped = query.replace('"', '""').strip()
     return f'"{escaped}"'
-
-
-def json_dumps(value: Any) -> str | None:
-    if value is None:
-        return None
-    return json.dumps(value, ensure_ascii=False, default=str, sort_keys=True)
-
-
-def utc_now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()

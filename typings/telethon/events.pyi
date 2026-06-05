@@ -1,0 +1,6 @@
+class NewMessage:
+    class Event:
+        message: object
+        async def get_chat(self) -> object: ...
+
+    def __init__(self) -> None: ...

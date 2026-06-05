@@ -2,23 +2,25 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Iterable
 from datetime import date, datetime
 from io import StringIO
-from typing import Any, Iterable
+
+from .types import JsonObject, JsonValue, TableColumn
 
 
-def json_default(value: Any) -> Any:
+def json_default(value: object) -> str:
     if isinstance(value, (datetime, date)):
         return value.isoformat()
     return str(value)
 
 
-def emit_json(payload: Any) -> None:
+def emit_json(payload: JsonValue) -> None:
     json.dump(payload, sys.stdout, ensure_ascii=False, default=json_default)
     sys.stdout.write("\n")
 
 
-def truncate(value: Any, width: int, full: bool) -> str:
+def truncate(value: object, width: int, full: bool) -> str:
     if value is None:
         return ""
     text = str(value).replace("\n", " ")
@@ -29,39 +31,55 @@ def truncate(value: Any, width: int, full: bool) -> str:
     return text[: width - 3] + "..."
 
 
-def emit_table(rows: Iterable[dict[str, Any]], columns: list[tuple[str, str, int]], *, full: bool) -> None:
+def emit_table(rows: Iterable[JsonObject], columns: list[TableColumn], *, full: bool) -> None:
     materialized = list(rows)
     if not materialized:
         return
-    widths: list[int] = []
-    for key, header, max_width in columns:
-        width = len(header)
-        for row in materialized:
-            width = max(width, len(truncate(row.get(key), max_width, full)))
-        widths.append(width if full else min(width, max_width))
-
-    header_line = "  ".join(header.ljust(widths[i]) for i, (_, header, _) in enumerate(columns))
-    sep_line = "  ".join("-" * widths[i] for i in range(len(columns)))
-    print(header_line)
-    print(sep_line)
+    widths = table_widths(materialized, columns, full=full)
+    print(table_header(columns, widths))
+    print(table_separator(widths))
     for row in materialized:
-        parts = []
-        for i, (key, _, max_width) in enumerate(columns):
-            parts.append(truncate(row.get(key), max_width, full).ljust(widths[i]))
-        print("  ".join(parts))
+        print(table_row(row, columns, widths, full=full))
+
+
+def table_widths(rows: list[JsonObject], columns: list[TableColumn], *, full: bool) -> list[int]:
+    return [column_width(rows, column, full=full) for column in columns]
+
+
+def column_width(rows: list[JsonObject], column: TableColumn, *, full: bool) -> int:
+    key, header, max_width = column
+    content_width = max(len(truncate(row.get(key), max_width, full)) for row in rows)
+    width = max(len(header), content_width)
+    return width if full else min(width, max_width)
+
+
+def table_header(columns: list[TableColumn], widths: list[int]) -> str:
+    return "  ".join(header.ljust(widths[index]) for index, (_, header, _) in enumerate(columns))
+
+
+def table_separator(widths: list[int]) -> str:
+    return "  ".join("-" * width for width in widths)
+
+
+def table_row(row: JsonObject, columns: list[TableColumn], widths: list[int], *, full: bool) -> str:
+    parts = [
+        truncate(row.get(key), max_width, full).ljust(widths[index])
+        for index, (key, _, max_width) in enumerate(columns)
+    ]
+    return "  ".join(parts)
 
 
 def emit_rows(
-    rows: Iterable[dict[str, Any]],
-    columns: list[tuple[str, str, int]],
+    rows: Iterable[JsonObject],
+    columns: list[TableColumn],
     *,
     json_output: bool,
     full: bool,
-    meta: dict[str, Any] | None = None,
+    meta: JsonObject | None = None,
 ) -> None:
     materialized = list(rows)
     if json_output:
-        payload: dict[str, Any] = {"data": materialized}
+        payload: JsonObject = {"data": materialized}
         if meta:
             payload["meta"] = meta
         emit_json(payload)
@@ -69,7 +87,7 @@ def emit_rows(
     emit_table(materialized, columns, full=full)
 
 
-def emit_object(data: dict[str, Any], *, json_output: bool) -> None:
+def emit_object(data: JsonObject, *, json_output: bool) -> None:
     if json_output:
         emit_json({"data": data})
         return
